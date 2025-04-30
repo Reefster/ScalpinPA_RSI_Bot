@@ -1,20 +1,18 @@
+
 import requests
 import pandas as pd
 import ta
 import time
 import threading
-import datetime
-from flask import Flask
-from telegram import Bot
+from flask import Flask, request
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, MessageHandler, Filters
 
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return ""
-
 BOT_TOKEN = '8051801199:AAEIDOsCF45Zw0FVZJK6PHMKkYnFeZaveKo'
 CHAT_ID = '6333148344'
+bot = Bot(token=BOT_TOKEN)
 
 stable_coins = [
     'USDT', 'USDC', 'BUSD', 'TUSD', 'FDUSD', 'DAI', 'USDSB', 'USD', 'EURS',
@@ -22,35 +20,31 @@ stable_coins = [
     'XAUT', 'XSGD', 'CUSD', 'NUSD', 'USDX'
 ]
 
+@app.route('/')
+def home():
+    return "RSI Bot Aktif"
+
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+def telegram_webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dp.process_update(update)
+    return 'ok'
+
 def get_usdt_symbols():
-    url = "https://api.binance.com/api/v3/exchangeInfo"
     try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        if 'symbols' not in data:
-            print("Binance API yanıtında 'symbols' anahtarı yok.")
-            return []
-
-        symbols = []
-        for s in data['symbols']:
-            symbol = s['symbol']
-            base = s['baseAsset']
-            if symbol.endswith('USDT') and base not in stable_coins:
-                symbols.append(symbol)
-        return symbols
-
+        data = requests.get("https://api.binance.com/api/v3/exchangeInfo").json()
+        return [
+            s['symbol'] for s in data['symbols']
+            if s['symbol'].endswith('USDT') and s['baseAsset'] not in stable_coins
+        ]
     except Exception as e:
-        print(f"Binance API bağlantı hatası: {e}")
+        print("Sembol alma hatası:", e)
         return []
 
 def get_klines(symbol, interval, limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    response = requests.get(url)
-    data = response.json()
-    df = pd.DataFrame(data)
-    df.columns = ['time', 'open', 'high', 'low', 'close', 'volume',
-                  'close_time', 'quote_asset_volume', 'number_of_trades',
-                  'taker_buy_base', 'taker_buy_quote', 'ignore']
+    df = pd.DataFrame(requests.get(url).json())
+    df.columns = ['time','open','high','low','close','volume','close_time','quote_asset_volume','number_of_trades','taker_buy_base','taker_buy_quote','ignore']
     df['close'] = df['close'].astype(float)
     return df
 
@@ -59,41 +53,35 @@ def calculate_rsi(df, period=14):
     df['rsi'] = rsi.rsi()
     return df
 
-def send_telegram_message(message):
-    bot = Bot(token=BOT_TOKEN)
-    bot.send_message(chat_id=CHAT_ID, text=message)
+def send_telegram_message(msg):
+    bot.send_message(chat_id=CHAT_ID, text=msg)
+
+def handle_message(update, context):
+    text = update.message.text.strip().lower()
+    print(f"Gelen mesaj: {text}")  # Log için
+    if text == "arda_botu_test_ediyor":
+        context.bot.send_message(chat_id=update.effective_chat.id, text="✅ Bot çalışıyor.")
 
 def rsi_bot():
     symbols = get_usdt_symbols()
 
     while True:
         try:
-            now = datetime.datetime.now()
-            if now.minute % 15 == 0 and now.second < 3:
-                send_telegram_message(f"🔄 RSI bot taraması yapılıyor... (Saat: {now.strftime('%H:%M')})")
-                time.sleep(3)
-
             for symbol in symbols:
-                df_5m = get_klines(symbol, '5m')
-                df_15m = get_klines(symbol, '15m')
-                df_1h = get_klines(symbol, '1h')
-                df_4h = get_klines(symbol, '4h')
-
-                df_5m = calculate_rsi(df_5m)
-                df_15m = calculate_rsi(df_15m)
-                df_1h = calculate_rsi(df_1h)
-                df_4h = calculate_rsi(df_4h)
+                df_5m = calculate_rsi(get_klines(symbol, '5m'))
+                df_15m = calculate_rsi(get_klines(symbol, '15m'))
+                df_1h = calculate_rsi(get_klines(symbol, '1h'))
+                df_4h = calculate_rsi(get_klines(symbol, '4h'))
 
                 rsi_5m = df_5m['rsi'].iloc[-1]
                 rsi_15m = df_15m['rsi'].iloc[-1]
                 rsi_1h = df_1h['rsi'].iloc[-1]
                 rsi_4h = df_4h['rsi'].iloc[-1]
                 last_price = df_5m['close'].iloc[-1]
-
                 rsi_avg = (rsi_5m + rsi_15m + rsi_1h + rsi_4h) / 4
 
                 if rsi_5m > 90 or rsi_15m > 90 or rsi_avg > 85:
-                    message = (
+                    msg = (
                         f"💰: {symbol}\n"
                         f"🔔: High🔴🔴 RSI Alert +85 \n"
                         f" RSI 5minute: {rsi_5m:.2f}\n"
@@ -103,15 +91,16 @@ def rsi_bot():
                         f" Last Price: {last_price:.5f}\n"
                         f" ScalpingPA"
                     )
-                    send_telegram_message(message)
-
+                    send_telegram_message(msg)
                 time.sleep(0.1)
-
             time.sleep(60)
-
         except Exception as e:
-            print(f"Hata: {e}")
+            print("Bot hatası:", e)
             time.sleep(60)
+
+from telegram.ext import CallbackContext
+dp = Dispatcher(bot, None, workers=0)
+dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
 if __name__ == "__main__":
     threading.Thread(target=rsi_bot).start()
