@@ -3,6 +3,7 @@ import pandas as pd
 import ta
 import time
 import threading
+import datetime
 from flask import Flask
 from telegram import Bot
 
@@ -27,7 +28,7 @@ def get_usdt_symbols():
         response = requests.get(url, timeout=10)
         data = response.json()
         if 'symbols' not in data:
-            print("Binance API yanıtında 'symbols' anahtarı yok. Geriye boş liste dönülüyor.")
+            print("Binance API yanıtında 'symbols' anahtarı yok.")
             return []
 
         symbols = []
@@ -53,7 +54,7 @@ def get_klines(symbol, interval, limit=100):
     df['close'] = df['close'].astype(float)
     return df
 
-def calculate_rsi(df, period=12):
+def calculate_rsi(df, period=14):
     rsi = ta.momentum.RSIIndicator(close=df['close'], window=period)
     df['rsi'] = rsi.rsi()
     return df
@@ -63,12 +64,15 @@ def send_telegram_message(message):
     bot.send_message(chat_id=CHAT_ID, text=message)
 
 def rsi_bot():
-    send_telegram_message("✅ RSI Bot başlatıldı ve çalışıyor.")
-    
     symbols = get_usdt_symbols()
 
     while True:
         try:
+            now = datetime.datetime.now()
+            if now.minute % 15 == 0 and now.second < 3:
+                send_telegram_message(f"🔄 RSI bot taraması yapılıyor... (Saat: {now.strftime('%H:%M')})")
+                time.sleep(3)
+
             for symbol in symbols:
                 df_5m = get_klines(symbol, '5m')
                 df_15m = get_klines(symbol, '15m')
@@ -101,7 +105,7 @@ def rsi_bot():
                     )
                     send_telegram_message(message)
 
-                time.sleep(1)
+                time.sleep(0.1)
 
             time.sleep(60)
 
